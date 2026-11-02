@@ -3,6 +3,7 @@ hw2_detection.py — all logic for HW2 (object detection on drone videos, VisDro
 
 The notebook only calls functions from this file. Sections:
 
+    0. Environment helpers (Colab / local, data preparation from a folder or a .zip, workers, GPU info)
     1. Constants and utilities (seeds, paths, box helpers)
     2. Data index (YOLO labels -> pixel boxes, ignore regions, test list)
     3. Splits and frame subsampling (split by clip, never by frame)
@@ -17,8 +18,10 @@ The notebook only calls functions from this file. Sections:
     8. Training (same protocol for every model)
     9. Inference, speed, COCO evaluation (ignored regions are "don't care")
    10. Analysis helpers (anchors, FCOS assignment, RPN recall, failure cases, curves)
-   11. Experiment runner (skips runs that are already finished)
+   11. Experiment runner (skips finished runs, resumes interrupted ones)
    12. Submission
+
+Works locally (VS Code, Windows/Linux) and in Google Colab; see section 0 for environment helpers.
 
 Class ids are 0..7 everywhere outside the models (same as YOLO labels and the submission).
 Boxes are [x1, y1, x2, y2] in pixels of the original image everywhere outside the models.
@@ -36,8 +39,10 @@ import pickle
 import random
 import re
 import shutil
+import sys
 import time
 import types
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -54,6 +59,108 @@ try:  # avoid thread oversubscription inside DataLoader workers
     cv2.setNumThreads(0)
 except ImportError:
     pass
+
+
+# =============================================================================
+# 0. Environment helpers
+# =============================================================================
+def in_colab() -> bool:
+    return "google.colab" in sys.modules
+
+
+def default_num_workers() -> int:
+    """DataLoader workers: Windows starts workers slowly and Colab has 2 CPUs -> 2; otherwise up to 4."""
+    if os.name == "nt" or in_colab():
+        return 2
+    return max(0, min(4, (os.cpu_count() or 1) - 1))
+
+
+def gpu_info() -> dict:
+    if not torch.cuda.is_available():
+        return {"gpu": None}
+    p = torch.cuda.get_device_properties(0)
+    return {"gpu": p.name, "vram_gb": round(p.total_memory / 1024 ** 3, 1), "torch": torch.__version__,
+            "cuda": torch.version.cuda}
+
+
+def extract_zip(zip_path, out_dir, every: int = 5000) -> Path:
+    """Extract a zip with progress output; checks free disk space first. Skips if already extracted."""
+    zip_path, out_dir = Path(zip_path), Path(out_dir)
+    marker = out_dir / ".extracted_ok"
+    if marker.exists():
+        return out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as zf:
+        members = zf.infolist()
+        need = sum(m.file_size for m in members)
+        free = shutil.disk_usage(out_dir).free
+        if free < need * 1.05:
+            raise OSError(f"Not enough disk space in {out_dir}: need ~{need / 1e9:.1f} GB, free {free / 1e9:.1f} GB")
+        print(f"Extracting {zip_path.name}: {len(members)} files, {need / 1e9:.1f} GB -> {out_dir}")
+        t0 = time.time()
+        for i, m in enumerate(members, 1):
+            zf.extract(m, out_dir)
+            if i % every == 0 or i == len(members):
+                print(f"  {i}/{len(members)} files, {time.time() - t0:.0f} s", flush=True)
+    marker.touch()
+    return out_dir
+
+
+def prepare_data(source, extract_dir=None) -> Path:
+    """Return the data root (folder with train/, val/, test/, test_images.csv).
+
+    `source` may be: the data root itself, a folder that contains it (searched a few levels down),
+    a folder that contains the competition .zip, or the .zip file. A zip is extracted once into
+    `extract_dir` (default: next to the zip, folder named like the zip).
+    """
+    source = Path(source)
+    if not source.exists():
+        raise FileNotFoundError(f"{source} does not exist")
+    try:
+        return find_data_root(source if source.is_dir() else source.parent)
+    except FileNotFoundError:
+        pass
+    zips = [source] if source.suffix.lower() == ".zip" else sorted(source.glob("*.zip"))
+    if not zips:
+        raise FileNotFoundError(f"No data folder (train/, test_images.csv) and no .zip found in {source}")
+    zip_path = max(zips, key=lambda p: p.stat().st_size)
+    out = Path(extract_dir) if extract_dir else zip_path.with_suffix("")
+    extract_zip(zip_path, out)
+    return find_data_root(out)
+
+
+def set_kaggle_credentials_from_colab() -> bool:
+    """Copy Kaggle API credentials from Colab secrets (KAGGLE_USERNAME + KAGGLE_KEY, or KAGGLE_API_TOKEN)
+    to environment variables, where kagglehub reads them."""
+    try:
+        from google.colab import userdata
+    except ImportError:
+        return False
+    found = False
+    for key in ("KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_API_TOKEN"):
+        try:
+            val = userdata.get(key)
+        except Exception:
+            val = None
+        if val:
+            os.environ[key] = val
+            found = True
+    return found
+
+
+def download_competition(competition: str, cache_dir=None) -> Path:
+    """Download (and unpack) the competition files with kagglehub; returns the data root.
+
+    Needs Kaggle API credentials (~/.kaggle/kaggle.json, environment variables or Colab secrets)
+    and accepted competition rules on the Kaggle website.
+    """
+    if cache_dir:
+        os.environ["KAGGLEHUB_CACHE"] = str(cache_dir)
+    if in_colab():
+        set_kaggle_credentials_from_colab()
+    import kagglehub
+    path = kagglehub.competition_download(competition)
+    return prepare_data(path)
 
 
 # =============================================================================
@@ -113,7 +220,7 @@ def find_data_root(start, max_depth: int = 3) -> Path:
             except (PermissionError, FileNotFoundError, NotADirectoryError):
                 pass
         frontier = nxt
-    raise FileNotFoundError(f"Could not find train/ and test_images.csv under {start}")
+    raise FileNotFoundError(f"Could not find train/ and test_images.csv under {start} (searched {max_depth} levels)")
 
 
 def yolo_to_xyxy(arr: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -217,7 +324,10 @@ def build_index(root, split: str, cache_dir=None, num_workers: int = 8, force: b
     Image size is read once per clip (first frame) and checked on the last frame (`size_consistent`).
     """
     root = Path(root)
-    cache = Path(cache_dir) / f"index_{split}.pkl" if cache_dir else None
+    # the index stores absolute image paths, so the cache file is tied to the data location
+    import hashlib
+    tag = hashlib.md5(str(root.resolve()).encode("utf-8")).hexdigest()[:8]
+    cache = Path(cache_dir) / f"index_{split}_{tag}.pkl" if cache_dir else None
     if cache is not None and cache.exists() and not force:
         return pd.read_pickle(cache)
 
@@ -399,7 +509,7 @@ def temporal_redundancy(df: pd.DataFrame, lags=(1, 2, 5, 10, 20, 40), n_clips: i
 
     def thumb(path):
         if path not in cache:
-            im = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            im = read_image_cv2(path, cv2.IMREAD_GRAYSCALE)
             h, w = im.shape
             cache[path] = cv2.resize(im, (thumb_width, int(h * thumb_width / w))).astype(np.float32)
         return cache[path]
@@ -493,9 +603,11 @@ def plot_size_distribution(objs: pd.DataFrame, min_size=800, max_size=1333):
     for name in CLASS_NAMES:
         s = objs.loc[objs["class_name"] == name, "sqrt_area"]
         if len(s):
-            axes[0].hist(s, bins=bins, histtype="step", label=name, density=True)
+            # share of the class per bin (density=True would inflate the narrow left bins of a log axis)
+            axes[0].hist(s, bins=bins, histtype="step", label=name, weights=np.full(len(s), 100 / len(s)))
     axes[0].set_xscale("log")
     axes[0].set_xlabel("sqrt(box area), px (original image)")
+    axes[0].set_ylabel("% of the class")
     axes[0].set_title("Object size per class")
     axes[0].legend(fontsize=7, ncol=2)
     axes[1].hist(objs["sqrt_area"], bins=bins, alpha=0.6, label="original")
@@ -541,9 +653,15 @@ def plot_aspect_ratios(objs: pd.DataFrame):
     for name in CLASS_NAMES:
         s = objs.loc[objs["class_name"] == name, "aspect_hw"]
         if len(s):
-            ax.hist(s.clip(0.2, 5), bins=bins, histtype="step", density=True, label=name)
+            ax.hist(s.clip(0.2, 5), bins=bins, histtype="step", label=name, weights=np.full(len(s), 100 / len(s)))
     ax.set_xscale("log")
-    ax.set_xlabel("aspect ratio h/w")
+    ax.set_xlabel("aspect ratio h/w (log scale)")
+    ax.set_ylabel("% of the class")
+    for r in (0.5, 1.0, 2.0):  # default anchor aspect ratios
+        ax.axvline(r, color="k", lw=0.8, ls="--")
+    ax.minorticks_off()
+    ax.set_xticks([0.25, 0.5, 1, 2, 4])
+    ax.set_xticklabels(["0.25", "0.5", "1", "2", "4"])
     ax.set_title("Box aspect ratios (anchor design)")
     ax.legend(fontsize=7, ncol=2)
     fig.tight_layout()
@@ -556,13 +674,20 @@ def plot_aspect_ratios(objs: pd.DataFrame):
 CLASS_COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6", "#bfef45"]
 
 
+def read_image_cv2(path: str, flags=None) -> np.ndarray:
+    """cv2.imread that also works with non-ASCII paths on Windows (cv2.imread silently fails there)."""
+    import cv2
+    flags = cv2.IMREAD_COLOR if flags is None else flags
+    img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), flags)
+    if img is None:
+        raise FileNotFoundError(f"Cannot read image {path}")
+    return img
+
+
 def load_image(path: str) -> np.ndarray:
     """RGB uint8 HxWx3."""
     import cv2
-    img = cv2.imread(path, cv2.IMREAD_COLOR)
-    if img is None:
-        raise FileNotFoundError(path)
-    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    return cv2.cvtColor(read_image_cv2(path), cv2.COLOR_BGR2RGB)
 
 
 def draw_boxes(ax, boxes, labels=None, scores=None, color=None, lw=1.0, ls="-", text=False):
@@ -694,12 +819,16 @@ def collate_fn(batch):
     return tuple(zip(*batch))
 
 
-def make_loader(ds: Dataset, batch_size: int, shuffle: bool, num_workers: int = 4, seed: int = 42) -> DataLoader:
+def make_loader(ds: Dataset, batch_size: int, shuffle: bool, num_workers="auto", seed: int = 42) -> DataLoader:
+    """num_workers="auto" -> default_num_workers(). On Windows the Dataset must come from this module
+    (it does), because worker processes import it."""
+    if num_workers in (None, "auto"):
+        num_workers = default_num_workers()
     g = torch.Generator()
     g.manual_seed(seed)
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers,
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, num_workers=int(num_workers),
                       collate_fn=collate_fn, pin_memory=torch.cuda.is_available(), generator=g,
-                      persistent_workers=num_workers > 0)
+                      persistent_workers=int(num_workers) > 0)
 
 
 def to_device(images, targets, device):
@@ -731,6 +860,7 @@ def show_augmented(ds: DroneDetDataset, idx: int, n: int = 3, seed: int = 0):
 #   - in train mode with targets returns a dict of losses ("_total" = loss to optimise, if present),
 #   - in eval mode returns [{"boxes": px xyxy in original image, "scores", "labels": 0..7}, ...].
 
+# effective batch = batch_size * grad_accum (e.g. batch_size=2, grad_accum=2 on a GPU with less memory)
 COMMON_CFG = dict(
     pretrained=True, seed=42,
     # same input resolution rule for all models (shorter side -> min_size, longer side <= max_size)
@@ -738,7 +868,7 @@ COMMON_CFG = dict(
     # data
     train_step=10, val_step=5, mask_ignore=True, drop_ioa=0.5, hflip_p=0.5, color_jitter=0.0,
     # optimisation
-    epochs=8, batch_size=4, eval_batch_size=4, num_workers=4,
+    epochs=8, batch_size=4, grad_accum=1, eval_batch_size=4, num_workers="auto",
     optimizer="sgd", lr=0.005, backbone_lr_mult=1.0, weight_decay=1e-4, momentum=0.9,
     scheduler="cosine", warmup_iters=300, warmup_factor=0.001, min_lr_ratio=0.05, milestones=(0.7, 0.9),
     grad_clip=10.0, amp=True, eval_every=1, max_minutes=None,
@@ -1229,62 +1359,108 @@ def _grad_scaler(enabled: bool):
         return torch.cuda.amp.GradScaler(enabled=enabled)
 
 
+def _torch_load(path, device="cpu", weights_only=True):
+    try:
+        return torch.load(path, map_location=device, weights_only=weights_only)
+    except TypeError:  # very old torch without weights_only
+        return torch.load(path, map_location=device)
+
+
+def _atomic_save(obj, path):
+    """Write to a temporary file first, so an interrupted save never leaves a broken checkpoint."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
 def save_checkpoint(model, path):
-    torch.save(model.state_dict(), path)
+    _atomic_save(model.state_dict(), path)
 
 
 def load_checkpoint(model, path, device="cpu"):
-    model.load_state_dict(torch.load(path, map_location=device))
+    model.load_state_dict(_torch_load(path, device))
     return model
 
 
 def train_detector(model, train_loader, val_loader, val_df, cfg: dict, run_dir, device, name: str = ""):
-    """Same loop for every model. Saves best.pt (by val mAP), last.pt and history.json in run_dir."""
+    """Same loop for every model.
+
+    Saves in run_dir: best.pt (weights with the best val mAP), history.json, and resume.pt after every
+    epoch (model + optimizer + scheduler state). If resume.pt exists, training continues after the
+    last finished epoch, so a lost Colab session only costs the current epoch.
+    Gradient accumulation: one optimizer step per `grad_accum` batches.
+    """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     model.to(device)
     optimizer = build_optimizer(model, cfg)
-    total_iters = cfg["epochs"] * len(train_loader)
-    scheduler = build_scheduler(optimizer, cfg, total_iters)
+    accum = max(1, int(cfg.get("grad_accum", 1)))
+    n_batches = len(train_loader)
+    steps_per_epoch = math.ceil(n_batches / accum)
+    scheduler = build_scheduler(optimizer, cfg, cfg["epochs"] * steps_per_epoch)
     use_amp = bool(cfg["amp"]) and device.type == "cuda"
     scaler = _grad_scaler(use_amp)
 
     history = {"epoch": [], "minutes": [], "lr": [], "train_loss": [], "loss_parts": [], "val": [],
                "skipped_iters": [], "best_epoch": None}
-    best_map, t0, stop = -1.0, time.time(), False
+    best_map, start_epoch, elapsed_before = -1.0, 1, 0.0
+    resume_path = run_dir / "resume.pt"
+    if resume_path.exists():
+        ck = _torch_load(resume_path, device, weights_only=False)
+        model.load_state_dict(ck["model"])
+        optimizer.load_state_dict(ck["optimizer"])
+        scheduler.load_state_dict(ck["scheduler"])
+        scaler.load_state_dict(ck["scaler"])
+        history, best_map = ck["history"], ck["best_map"]
+        start_epoch, elapsed_before = ck["epoch"] + 1, ck["elapsed_min"]
+        print(f"[{name}] resuming after epoch {ck['epoch']} ({elapsed_before:.1f} min already trained)")
 
-    for epoch in range(1, cfg["epochs"] + 1):
+    t0 = time.time()
+
+    def minutes():
+        return elapsed_before + (time.time() - t0) / 60
+
+    stop = False
+    for epoch in range(start_epoch, cfg["epochs"] + 1):
+        if getattr(train_loader, "generator", None) is not None:
+            train_loader.generator.manual_seed(cfg["seed"] + epoch)  # same shuffling after a resume
         model.train()
-        sums, n_ok, skipped = {}, 0, 0
-        for images, targets in train_loader:
+        sums, n_ok, skipped, has_grad = {}, 0, 0, False
+        optimizer.zero_grad(set_to_none=True)
+        for it, (images, targets) in enumerate(train_loader):
             images, targets = to_device(images, targets, device)
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
                 loss_dict = model(images, targets)
             total = loss_dict.pop("_total") if "_total" in loss_dict else sum(loss_dict.values())
-            optimizer.zero_grad(set_to_none=True)
-            if not torch.isfinite(total):
+            if torch.isfinite(total):
+                scaler.scale(total / accum).backward()
+                has_grad = True
+                n_ok += 1
+                sums["total"] = sums.get("total", 0.0) + float(total.item())
+                for k, v in loss_dict.items():
+                    sums[k] = sums.get(k, 0.0) + float(v.item())
+            else:
                 skipped += 1
+
+            if (it + 1) % accum == 0 or it + 1 == n_batches:  # end of an accumulation group
+                if has_grad:
+                    if cfg["grad_clip"]:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["grad_clip"])
+                    scaler.step(optimizer)
+                    scaler.update()
+                optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
-                continue
-            scaler.scale(total).backward()
-            if cfg["grad_clip"]:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["grad_clip"])
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
-            n_ok += 1
-            sums["total"] = sums.get("total", 0.0) + float(total.item())
-            for k, v in loss_dict.items():
-                sums[k] = sums.get(k, 0.0) + float(v.item())
-            if cfg["max_minutes"] and (time.time() - t0) / 60 > cfg["max_minutes"]:
+                has_grad = False
+            if cfg["max_minutes"] and minutes() > cfg["max_minutes"]:
                 stop = True
+                optimizer.zero_grad(set_to_none=True)
                 break
 
-        minutes = (time.time() - t0) / 60
         parts = {k: v / max(n_ok, 1) for k, v in sums.items()}
         history["epoch"].append(epoch)
-        history["minutes"].append(round(minutes, 2))
+        history["minutes"].append(round(minutes(), 2))
         history["lr"].append(optimizer.param_groups[0]["lr"])
         history["train_loss"].append(parts.pop("total", float("nan")))
         history["loss_parts"].append(parts)
@@ -1295,24 +1471,26 @@ def train_detector(model, train_loader, val_loader, val_df, cfg: dict, run_dir, 
         if val_loader is not None and (epoch % cfg["eval_every"] == 0 or last_epoch):
             preds = predict(model, val_loader, device, amp=cfg["amp"])
             m = evaluate_coco(val_df, preds, fast=True)
-            history["val"].append({"epoch": epoch, "minutes": round((time.time() - t0) / 60, 2),
+            history["val"].append({"epoch": epoch, "minutes": round(minutes(), 2),
                                    **{k: m[k] for k in ("mAP", "AP50", "AP75", "AP_small", "AR")}})
             msg += f" | val mAP {m['mAP']:.4f} AP50 {m['AP50']:.4f} AP_small {m['AP_small']:.4f}"
             if m["mAP"] > best_map:
                 best_map = m["mAP"]
                 history["best_epoch"] = epoch
                 save_checkpoint(model, run_dir / "best.pt")
-        msg += f" | {minutes:.1f} min" + (f" | skipped {skipped} non-finite iters" if skipped else "")
+        if not (run_dir / "best.pt").exists():
+            save_checkpoint(model, run_dir / "best.pt")
+        msg += f" | {minutes():.1f} min" + (f" | skipped {skipped} non-finite iters" if skipped else "")
         print(msg, flush=True)
         with open(run_dir / "history.json", "w") as f:
             json.dump(history, f, indent=1)
         if stop:
             print(f"[{name}] stopped by max_minutes={cfg['max_minutes']}")
             break
-
-    save_checkpoint(model, run_dir / "last.pt")
-    if not (run_dir / "best.pt").exists():
-        shutil.copy(run_dir / "last.pt", run_dir / "best.pt")
+        _atomic_save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                      "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
+                      "history": history, "best_map": best_map, "epoch": epoch,
+                      "elapsed_min": minutes()}, resume_path)
     return history
 
 
@@ -1824,20 +2002,6 @@ def plot_train_losses(histories: dict, ax=None):
 MAIN_METRICS = ["mAP", "AP50", "AP75", "AP_tiny", "AP_small", "AP_medium", "AP_large", "AR"]
 
 
-def discover_prev_results(search_root="/kaggle/input") -> list:
-    """Folders with finished runs (*/metrics.json) from earlier notebook versions attached as input."""
-    root = Path(search_root)
-    if not root.exists():
-        return []
-    found = set()
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in ("images", "labels", "ignore")]
-        if "metrics.json" in filenames:
-            found.add(str(Path(dirpath).parent))
-            dirnames[:] = []
-    return sorted(found)
-
-
 def _find_finished_run(name: str, dirs) -> Path | None:
     for d in dirs:
         p = Path(d) / name
@@ -1875,16 +2039,21 @@ def load_model_from_run(run_dir, device, which: str = "best") -> nn.Module:
 
 
 def run_experiment(name: str, cfg: dict, train_df: pd.DataFrame, val_df: pd.DataFrame, results_dir,
-                   prev_results_dirs=(), device=None, force: bool = False) -> dict:
-    """Train + evaluate one configuration. If `name` already finished (here or in an attached
-    earlier output), it is loaded instead of retrained. Saves in results_dir/name:
-    config.json, history.json, best.pt, last.pt, val_preds.pkl, metrics.json.
+                   extra_results_dirs=(), device=None, force: bool = False) -> dict:
+    """Train + evaluate one configuration and save everything in results_dir/name:
+    config.json, history.json, best.pt, val_preds.pkl, metrics.json.
+
+    - finished run (metrics.json here or in one of `extra_results_dirs`) -> loaded, not retrained;
+    - interrupted run (resume.pt left) -> continues after the last finished epoch;
+    - force=True -> deletes the old folder and trains from scratch.
     """
     device = device or get_device()
     results_dir = Path(results_dir)
     run_dir = results_dir / name
+    if force and run_dir.exists():
+        shutil.rmtree(run_dir)
     if not force:
-        found = _find_finished_run(name, [results_dir, *prev_results_dirs])
+        found = _find_finished_run(name, [results_dir, *extra_results_dirs])
         if found is not None:
             if found.resolve() != run_dir.resolve():
                 shutil.copytree(found, run_dir, dirs_exist_ok=True)
@@ -1893,7 +2062,15 @@ def run_experiment(name: str, cfg: dict, train_df: pd.DataFrame, val_df: pd.Data
             return res
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    with open(run_dir / "config.json", "w") as f:
+    cfg_path = run_dir / "config.json"
+    if (run_dir / "resume.pt").exists() and cfg_path.exists():
+        with open(cfg_path) as f:
+            saved = json.load(f)
+        if json.loads(json.dumps(cfg)) != saved:
+            raise ValueError(f"[{name}] an interrupted run exists with a different config. "
+                             f"Use a new run name or force=True. Differences: "
+                             f"{ {k: (saved.get(k), v) for k, v in json.loads(json.dumps(cfg)).items() if saved.get(k) != v} }")
+    with open(cfg_path, "w") as f:
         json.dump(cfg, f, indent=1)
     seed_everything(cfg["seed"])
     torch.backends.cudnn.benchmark = True
@@ -1907,9 +2084,8 @@ def run_experiment(name: str, cfg: dict, train_df: pd.DataFrame, val_df: pd.Data
     train_loader = make_loader(train_ds, cfg["batch_size"], True, cfg["num_workers"], cfg["seed"])
     val_loader = make_loader(val_ds, cfg["eval_batch_size"], False, cfg["num_workers"], cfg["seed"])
 
-    t0 = time.time()
     history = train_detector(model, train_loader, val_loader, val_df, cfg, run_dir, device, name)
-    train_min = (time.time() - t0) / 60
+    train_min = history["minutes"][-1] if history["minutes"] else 0.0
 
     load_checkpoint(model, run_dir / "best.pt", device)
     preds = predict(model, val_loader, device, cfg["amp"])
@@ -1922,6 +2098,7 @@ def run_experiment(name: str, cfg: dict, train_df: pd.DataFrame, val_df: pd.Data
         pickle.dump(preds, f)
     with open(run_dir / "metrics.json", "w") as f:
         json.dump(res, f, indent=1)
+    (run_dir / "resume.pt").unlink(missing_ok=True)  # finished: only best.pt is kept (saves disk / Drive space)
     res["history"] = history
     print(f"[{name}] done: mAP {res['mAP']:.4f} | AP50 {res['AP50']:.4f} | AP_small {res['AP_small']:.4f} "
           f"| {res['fps']} img/s | {train_min:.1f} min")

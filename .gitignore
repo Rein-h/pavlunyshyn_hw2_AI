@@ -1,0 +1,19 @@
+# data and training outputs (never commit them)
+data/
+results/
+results_smoke/
+cache/
+hw2_runs/
+*.zip
+*.pt
+*.pth
+*.pkl
+submission*.csv
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+.vscode/

@@ -1,0 +1,21 @@
+# HW2 - object detection on drone videos
+#
+# 1) PyTorch with CUDA (NVIDIA GPU) - install FIRST, separately, with the command from
+#    https://pytorch.org/get-started/locally/  (choose: Stable, Windows, Pip, Python, the newest CUDA), e.g.
+#      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#    Check: python -c "import torch; print(torch.cuda.is_available())"  -> True
+#    (a plain `pip install torch` on Windows gives the CPU-only version)
+#
+# 2) Everything else:
+#      pip install -r requirements.txt
+#
+# Google Colab already has most of these; the notebook installs what is missing.
+numpy
+pandas
+matplotlib
+pillow
+opencv-python
+pycocotools
+transformers>=4.45
+kagglehub
+ipykernel
