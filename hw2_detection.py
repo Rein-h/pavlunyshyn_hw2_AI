@@ -2150,15 +2150,15 @@ def make_submission(test_df: pd.DataFrame, preds: list, out_path, max_det: int =
     return sub
 
 
-def validate_submission(sub_path, sample_path, max_det: int = 500) -> dict:
-    """Basic format checks against sample_submission.csv."""
+def validate_submission(sub_path, reference_csv, max_det: int = 500) -> dict:
+    """Format checks. `reference_csv` = sample_submission.csv or test_images.csv (both have image_id)."""
     sub = pd.read_csv(sub_path, keep_default_na=False)
-    sample = pd.read_csv(sample_path, keep_default_na=False)
+    ref = pd.read_csv(reference_csv, keep_default_na=False)
     problems = []
-    if list(sub.columns) != list(sample.columns):
-        problems.append(f"columns {list(sub.columns)} != {list(sample.columns)}")
-    if set(sub["image_id"]) != set(sample["image_id"]) or len(sub) != len(sample):
-        problems.append("image_id set or row count differs from sample_submission")
+    if list(sub.columns) != ["image_id", "PredictionString"]:
+        problems.append(f"columns {list(sub.columns)} != ['image_id', 'PredictionString']")
+    if set(sub["image_id"]) != set(ref["image_id"]) or len(sub) != len(ref):
+        problems.append("image_id set or row count differs from the reference file")
     n_det = []
     for ps in sub["PredictionString"].astype(str):
         vals = ps.split()
