@@ -2175,3 +2175,122 @@ def validate_submission(sub_path, reference_csv, max_det: int = 500) -> dict:
         problems.append(f"more than {max_det} detections in an image")
     return {"ok": not problems, "problems": problems, "rows": len(sub),
             "mean detections/image": round(float(n_det.mean()), 1), "max detections/image": int(n_det.max())}
+
+# =============================================================================
+# 13. Pipeline helpers (inference settings, test-time flip, merging, caching)
+# =============================================================================
+def set_inference_params(det, score_thresh=None, nms_thresh=None, max_det=None):
+    """Change post-processing of a loaded detector (no retraining).
+
+    score_thresh: drop detections below this score; nms_thresh: IoU for removing duplicates;
+    max_det: detections kept per image.
+    """
+    if det.arch == "faster_rcnn":
+        target, det_attr = det.model.roi_heads, "detections_per_img"
+    elif det.arch in ("retinanet", "fcos"):
+        target, det_attr = det.model, "detections_per_img"
+    else:  # rtdetr: no NMS, only a score threshold and top-k
+        if score_thresh is not None:
+            det.score_thresh = score_thresh
+        if max_det is not None:
+            det.max_det = max_det
+        return det
+    if score_thresh is not None:
+        target.score_thresh = score_thresh
+    if nms_thresh is not None:
+        target.nms_thresh = nms_thresh
+    if max_det is not None:
+        setattr(target, det_attr, max_det)
+    return det
+
+
+@torch.no_grad()
+def predict_flip(model, df, device, batch_size: int = 1, num_workers=0, amp: bool = True) -> list:
+    """Predictions on horizontally flipped frames, mapped back to original coordinates."""
+    model.eval()
+    ds = DroneDetDataset(df, train=False, mask_ignore=False)
+    loader = make_loader(ds, batch_size, False, num_workers)
+    use_amp = amp and device.type == "cuda"
+    out = []
+    for images, _ in loader:
+        images, _ = to_device(images, None, device)
+        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+            dets = model([im.flip(-1) for im in images])
+        for im, d in zip(images, dets):
+            b = d["boxes"].float().cpu().numpy().astype(np.float32)
+            out.append({"boxes": flip_boxes(b, im.shape[-1]),
+                        "scores": d["scores"].float().cpu().numpy().astype(np.float32),
+                        "labels": d["labels"].cpu().numpy().astype(np.int64)})
+    return out
+
+
+def flip_boxes(boxes: np.ndarray, width: int) -> np.ndarray:
+    """Mirror [x1, y1, x2, y2] boxes horizontally in an image of the given width."""
+    b = boxes.copy()
+    b[:, [0, 2]] = width - boxes[:, [2, 0]]
+    return b
+
+
+def _nms_np(boxes: np.ndarray, scores: np.ndarray, iou_thr: float) -> np.ndarray:
+    """Greedy NMS (numpy): indices of kept boxes, highest score first."""
+    order = np.argsort(-scores, kind="stable")
+    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    areas = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+    keep = []
+    while order.size:
+        i = order[0]
+        keep.append(i)
+        rest = order[1:]
+        if rest.size == 0:
+            break
+        iw = np.clip(np.minimum(x2[i], x2[rest]) - np.maximum(x1[i], x1[rest]), 0, None)
+        ih = np.clip(np.minimum(y2[i], y2[rest]) - np.maximum(y1[i], y1[rest]), 0, None)
+        inter = iw * ih
+        iou = inter / np.maximum(areas[i] + areas[rest] - inter, 1e-9)
+        order = rest[iou <= iou_thr]
+    return np.array(keep, dtype=np.int64)
+
+
+def nms_preds(preds: list, iou_thr: float = 0.5, max_det: int = 500) -> list:
+    """Class-wise NMS on saved predictions (CPU), then keep the top `max_det` boxes per image."""
+    out = []
+    for p in preds:
+        if len(p["boxes"]) == 0:
+            out.append(p)
+            continue
+        b = p["boxes"].astype(np.float64)
+        shift = (b.max() + 1.0) * p["labels"].astype(np.float64)  # boxes of different classes never overlap
+        keep = _nms_np(b + shift[:, None], p["scores"], iou_thr)[:max_det]
+        out.append({k: v[keep] for k, v in p.items()})
+    return out
+
+
+def merge_preds(pred_lists: list, iou_thr: float = 0.5, max_det: int = 500, weights=None) -> list:
+    """Merge predictions of several passes / models image by image (concatenate + class-wise NMS).
+
+    `weights` multiply the scores of each source (e.g. to trust one model more).
+    """
+    weights = weights or [1.0] * len(pred_lists)
+    merged = []
+    for parts in zip(*pred_lists):
+        merged.append({
+            "boxes": np.concatenate([p["boxes"] for p in parts]).astype(np.float32).reshape(-1, 4),
+            "scores": np.concatenate([p["scores"] * w for p, w in zip(parts, weights)]).astype(np.float32),
+            "labels": np.concatenate([p["labels"] for p in parts]).astype(np.int64),
+        })
+    return nms_preds(merged, iou_thr, max_det)
+
+
+def cached(path, compute):
+    """Load a pickled result from `path`, or compute it with `compute()` and save it there."""
+    path = Path(path)
+    if path.exists():
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    result = compute()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump(result, f)
+    os.replace(tmp, path)
+    return result
