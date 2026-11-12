@@ -2141,7 +2141,7 @@ def make_submission(test_df: pd.DataFrame, preds: list, out_path, max_det: int =
         for j in order:
             x1, y1 = float(np.clip(b[j, 0], 0, r.width)), float(np.clip(b[j, 1], 0, r.height))
             x2, y2 = float(np.clip(b[j, 2], 0, r.width)), float(np.clip(b[j, 3], 0, r.height))
-            if x2 - x1 <= 0 or y2 - y1 <= 0:
+            if x2 - x1 < 1 or y2 - y1 < 1:  # drop degenerate boxes (they would be written as width/height 0.0)
                 continue
             parts.append(f"{int(lab[j])} {float(s[j]):.4f} {x1:.1f} {y1:.1f} {x2 - x1:.1f} {y2 - y1:.1f}")
         rows.append((r.image_id, " ".join(parts)))
