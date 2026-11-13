@@ -2,12 +2,12 @@
 title: Homework 2 -- Object Detection on Drone Videos (VisDrone2019-VID)
 author: Pavlunyshyn Bohdan
 course: Artificial Intelligence · UCU
-date: 2026-11-13
+date: 2026-10-12
 ---
 
 ## Introduction
 
-<!-- task, data, metric, approach, final result (0.282 vs baseline 0.222), where the code is -->
+Write your report here using regular **Markdown**. This text is an example — replace it.
 
 ## Method
 
@@ -15,21 +15,15 @@ date: 2026-11-13
 
 <!-- object sizes -> small objects; aspect ratios -> anchor ratios kept -->
 
-![Object sizes](images/object_sizes.png)
-
-*Figure 1. Object size (√area) per class in original pixels (left) and for all objects before and after resizing to 800 px (right); dashed lines mark 16 / 32 / 96 px.*
+![Figure 1. Object size per class in original pixels (left) and for all objects before and after resizing to 800 px (right); dashed lines mark 16 / 32 / 96 px.](images/object_sizes.png)
 
 <!-- density across clips -> split by clip, 500 detections per image, 500 queries -->
 
-![Scene density](images/density_per_clip.png)
-
-*Figure 2. Objects per frame in train and val (left) and per clip, sorted by median density (right; orange = validation clips).*
+![Figure 2. Objects per frame in train and val (left) and per clip, sorted by median density (right; orange = validation clips).](images/density_per_clip.png)
 
 <!-- class imbalance, rare bus -->
 
-![Class distribution](images/class_distribution.png)
-
-*Figure 3. Number of objects per class in the training and validation sets (log scale).*
+![Figure 3. Number of objects per class in the training and validation sets (log scale).](images/class_distribution.png)
 
 <!-- ignored regions, conversion check, split by clip, frame subsampling, resize and augmentation -->
 
@@ -89,21 +83,15 @@ date: 2026-11-13
 
 <!-- case 1: missed small and occluded objects -->
 
-![Missed objects](images/failure_missed.png)
-
-*Figure 4. Failure case 1 — the validation frame with the most missed objects (Faster R-CNN, score ≥ 0.3). Green: correct detections, red: false positives, yellow dashed: missed objects, grey: ignored regions.*
+![Figure 4. Failure case 1 — the validation frame with the most missed objects (Faster R-CNN, score ≥ 0.3). Green: correct detections, red: false positives, yellow dashed: missed objects, grey: ignored regions.](images/failure_missed.png)
 
 <!-- case 2: background false positives -->
 
-![Background false positives](images/failure_background.png)
-
-*Figure 5. Failure case 2 — the frame with the most false positives on background (same colours as in Figure 4).*
+![Figure 5. Failure case 2 — the frame with the most false positives on background (same colours as in Figure 4).](images/failure_background.png)
 
 <!-- case 3: confusion of similar classes, bus -->
 
-![Class confusion](images/failure_class.png)
-
-*Figure 6. Failure case 3 — the frame with the most class confusions (same colours as in Figure 4).*
+![Figure 6. Failure case 3 — the frame with the most class confusions (same colours as in Figure 4).](images/failure_class.png)
 
 #### RetinaNet
 
@@ -117,9 +105,7 @@ date: 2026-11-13
 
 <!-- convergence within the budget, comparison with the CNN, small objects and dense scenes -->
 
-![RT-DETR vs Faster R-CNN](images/rtdetr_vs_cnn.png)
-
-*Figure 7. Validation mAP during training: RT-DETR (300 and 500 queries) vs the best CNN (frcnn_props_giou), by epoch (left) and by training time (right). RT-DETR was trained on a slower GPU in fp32.*
+![Figure 7. Validation mAP during training: RT-DETR (300 and 500 queries) vs the best CNN (frcnn_props_giou), by epoch (left) and by training time (right). RT-DETR was trained on a slower GPU in fp32.](images/rtdetr_vs_cnn.png)
 
 ### Pipeline
 
@@ -157,9 +143,7 @@ date: 2026-11-13
 
 <!-- which models, inference settings and merging form the final submission (notebook section 9.4) -->
 
-```bash
+<!-- ```bash
 pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
 pip install -r requirements.txt
-```
-
-<!-- notebook settings to change (DATA_SOURCE, WORK_DIR, RUN), Run All, where the submission is written, seed 42 -->
+``` -->
