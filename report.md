@@ -15,15 +15,22 @@ Write your report here using regular **Markdown**. This text is an example — r
 
 <!-- object sizes -> small objects; aspect ratios -> anchor ratios kept -->
 
-![Figure 1. Object size per class in original pixels (left) and for all objects before and after resizing to 800 px (right); dashed lines mark 16 / 32 / 96 px.](images/object_sizes.png)
+![Object sizes](images/object_sizes.png)
+
+*Figure 1. Object size (√area) per class in original pixels (left) and for all objects before and after resizing to 800 px (right); dashed lines mark 16 / 32 / 96 px.*
+
 
 <!-- density across clips -> split by clip, 500 detections per image, 500 queries -->
 
-![Figure 2. Objects per frame in train and val (left) and per clip, sorted by median density (right; orange = validation clips).](images/density_per_clip.png)
+![Scene density](images/density_per_clip.png)
+
+*Figure 2. Objects per frame in train and val (left) and per clip, sorted by median density (right; orange = validation clips).*
 
 <!-- class imbalance, rare bus -->
 
-![Figure 3. Number of objects per class in the training and validation sets (log scale).](images/class_distribution.png)
+![Class distribution](images/class_distribution.png)
+
+*Figure 3. Number of objects per class in the training and validation sets (log scale).*
 
 <!-- ignored regions, conversion check, split by clip, frame subsampling, resize and augmentation -->
 
@@ -83,15 +90,22 @@ Write your report here using regular **Markdown**. This text is an example — r
 
 <!-- case 1: missed small and occluded objects -->
 
-![Figure 4. Failure case 1 — the validation frame with the most missed objects (Faster R-CNN, score ≥ 0.3). Green: correct detections, red: false positives, yellow dashed: missed objects, grey: ignored regions.](images/failure_missed.png)
+![Missed objects](images/failure_missed.png)
+
+*Figure 4. Failure case 1 — the validation frame with the most missed objects (Faster R-CNN, score ≥ 0.3). Green: correct detections, red: false positives, yellow dashed: missed objects, grey: ignored regions.*
+
 
 <!-- case 2: background false positives -->
 
-![Figure 5. Failure case 2 — the frame with the most false positives on background (same colours as in Figure 4).](images/failure_background.png)
+![Background false positives](images/failure_background.png)
+
+*Figure 5. Failure case 2 — the frame with the most false positives on background (same colours as in Figure 4).*
 
 <!-- case 3: confusion of similar classes, bus -->
 
-![Figure 6. Failure case 3 — the frame with the most class confusions (same colours as in Figure 4).](images/failure_class.png)
+![Class confusion](images/failure_class.png)
+
+*Figure 6. Failure case 3 — the frame with the most class confusions (same colours as in Figure 4).*
 
 #### RetinaNet
 
@@ -105,7 +119,9 @@ Write your report here using regular **Markdown**. This text is an example — r
 
 <!-- convergence within the budget, comparison with the CNN, small objects and dense scenes -->
 
-![Figure 7. Validation mAP during training: RT-DETR (300 and 500 queries) vs the best CNN (frcnn_props_giou), by epoch (left) and by training time (right). RT-DETR was trained on a slower GPU in fp32.](images/rtdetr_vs_cnn.png)
+![RT-DETR vs Faster R-CNN](images/rtdetr_vs_cnn.png)
+
+*Figure 7. Validation mAP during training: RT-DETR (300 and 500 queries) vs the best CNN (frcnn_props_giou), by epoch (left) and by training time (right). RT-DETR was trained on a slower GPU in fp32.*
 
 ### Pipeline
 
