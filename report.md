@@ -1,5 +1,5 @@
 ---
-title: Homework 2 -- Object Detection on Drone Videos (VisDrone2019-VID)
+title: Homework 2 -- Object Detection on Drone Videos
 author: Pavlunyshyn Bohdan
 course: Artificial Intelligence · UCU
 date: 2026-10-12
@@ -7,26 +7,39 @@ date: 2026-10-12
 
 ## Introduction
 
-Write your report here using regular **Markdown**. This text is an example — replace it.
+The core task of this homework is to develop a deep learning model capable of accurately identifying objects across the video. The objects are split into 8 different classes: person, bicycle, car, van, truck, tricycle, bus, motor. For detection 5 algorithms were chosen: One-stage Anchor-based, Two-stage Anchor-based, One-stage Anchor-free and a Query-based. Also a custom pipeline was developed, which will be explained more broadly in other section.
+
+The models were trained mainly on a free Tesla T4 GPU in Google Colab and on NVIDIA GeForce GTX 1660 SUPER (local PC). 
+
+All models and helper functions were written in `hw2_detection.py` and `hw2_detection.ipynb` is used for data visualization and models run.
+
+Metric mAP@[.5:.95] was used to compare different models.
+
+As a result, submission from models ensemble predictions gave **0.282** on the Kaggle public leaderboard, which beats the baseline of **0.222**.
 
 ## Method
 
 ### Data analysis and preprocessing
 
-<!-- object sizes -> small objects; aspect ratios -> anchor ratios kept -->
+The data is represented as clips and each clip is made of frames. Tottaly there are **56** train clips and **24,201** frames. **48** test  clips with **3,811** frames and **7** validation clips with **2,846** frames. Resolution vary from clip to clip (from **680x382** to **1920x1080**).
+
+After resizing each frame to 800px median sqrt of area is equal to ~32px. 50% of objects are <32px and only 5% <14px (Figure 1).
+
+As a conclusion - the smallest objects become the biggest problems. To work with it - we will monitor *AP_small*, tune anchors and try P2 level.
 
 ![Object sizes](images/object_sizes.png)
 
 *Figure 1. Object size (√area) per class in original pixels (left) and for all objects before and after resizing to 800 px (right); dashed lines mark 16 / 32 / 96 px.*
 
+Object density vary strongly between different clips and frames (from **0** to **180** objects per frame), the median is **43** objects per frame and 99% of the data has <= 142 objects. 
 
-<!-- density across clips -> split by clip, 500 detections per image, 500 queries -->
+However, the difference between object density in one clip is much smaller between, comparing to the difference between frames. As a result we will only split by clips. 
 
 ![Scene density](images/density_per_clip.png)
 
 *Figure 2. Objects per frame in train and val (left) and per clip, sorted by median density (right; orange = validation clips).*
 
-<!-- class imbalance, rare bus -->
+The classes are not distributed equally. Classes `person` and `car` are the most frequent, while `bus` can be seen the most rarely.
 
 ![Class distribution](images/class_distribution.png)
 
