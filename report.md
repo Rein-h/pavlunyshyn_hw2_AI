@@ -21,31 +21,45 @@ As a result, submission from models ensemble predictions gave **0.282** on the K
 
 ### Data analysis and preprocessing
 
-The data is represented as clips and each clip is made of frames. Tottaly there are **56** train clips and **24,201** frames. **48** test  clips with **3,811** frames and **7** validation clips with **2,846** frames. Resolution vary from clip to clip (from **680x382** to **1920x1080**).
+The data is represented as clips and each clip is made of frames. In total there are **56** train clips and **24,201** frames, **48** test clips with **3,811** frames and **7** validation clips with **2,846** frames. Resolution varies from clip to clip (from **680x382** to **1920x1080**).
 
-After resizing each frame to 800px median sqrt of area is equal to ~32px. 50% of objects are <32px and only 5% <14px (Figure 1).
+After resizing each frame to 800px the median object size (√area) is equal to ~32px. 50% of objects are <32px and only 5% <14px (Figure 1). Also, 80% of boxes have h/w in 0.48–2.28, so default anchor ratios (0.5, 1, 2) were kept.
 
-As a conclusion - the smallest objects become the biggest problems. To work with it - we will monitor *AP_small*, tune anchors and try P2 level.
+In conclusion, the smallest objects become the biggest problems. To adress this, we monitored *AP_small*, tuned anchors and tried P2 level.
 
 ![Object sizes](images/object_sizes.png)
 
 *Figure 1. Object size (√area) per class in original pixels (left) and for all objects before and after resizing to 800 px (right); dashed lines mark 16 / 32 / 96 px.*
 
-Object density vary strongly between different clips and frames (from **0** to **180** objects per frame), the median is **43** objects per frame and 99% of the data has <= 142 objects. 
-
-However, the difference between object density in one clip is much smaller between, comparing to the difference between frames. As a result we will only split by clips. 
+Object density varies strongly between different clips (from **0** to **180** objects per frame), the median is **43** objects per frame and 99% of frames have <= 142 objects. If we compare frames from two distinct clips, the difference in density is much bigger than in frames from the same clip. As a result, the data is split by clips to prevent leakage of data. Also, due to high density there are up to 500 detections per image and 500-query RT-DETR variant
 
 ![Scene density](images/density_per_clip.png)
 
 *Figure 2. Objects per frame in train and val (left) and per clip, sorted by median density (right; orange = validation clips).*
 
-The classes are not distributed equally. Classes `person` and `car` are the most frequent, while `bus` can be seen the most rarely.
+The classes are not distributed equally. Classes `person` and `car` are the most frequent, while `bus` is the rarest.
 
 ![Class distribution](images/class_distribution.png)
 
 *Figure 3. Number of objects per class in the training and validation sets (log scale).*
 
-<!-- ignored regions, conversion check, split by clip, frame subsampling, resize and augmentation -->
+**Ignored regions:** in VisDrone clips, there are areas where objects aren't annotated due to their small size or their large number (crowds of people). Also class `others` fits here. If this problem is ignored, the model will see a huge group of unlabelled but relevant objects and learn to treat them as background.
+
+In order to prevent this:
+- **during training:** such areas are filled with grey, so the model doesn't learn something wrong. Also GT boxes mostly inside these areas are dropped.
+- **during validation:** detections that lie more than halfway within an ignore region are also ignored before calculating mAP. The only exception is detection which coincides with the annotated box: we keep it.
+
+**Conversion check:** the conversion has been verified in two ways and it is correct.
+- **visually:** we drew the boxes around objects in frames and they land perfectly on the objects.
+- **automatically:** compared with annotations in COCO format on 200 random frames. The amount of boxes and ignored regions match and IoU ≈ 1.
+
+**Split by clip:** the official train/val split was used. All clips were checked on repeatability: none appears in both.
+
+**Frame subsampling:** in order to make training faster and easier only every 10th frame was used. After 1 frame **95%** of boxes stay in place, compared to only **21%** after 10 frames. In validation data every 5th frame was used. This leaves ~2,400 training and ~570 validation frames.
+
+**Resize and augmentation:** every frame is resized to 800px (short side) and <= 1333px (long side), proportions remain the same. Big frames shrink, while the small ones become bigger. For data augmentation only horizontal flip with probability of 0.5 was used.
+
+**Normalization:** ImageNet mean/std inside torchvision models, 0–1 input for RT-DETR.
 
 ### Training protocol
 
@@ -55,23 +69,25 @@ The classes are not distributed equally. Classes `person` and `car` are the most
 
 #### Two-stage anchor-based: Faster R-CNN
 
-<!-- model, tuned parameters: RPN proposals, GIoU box loss -->
+Torchvision `fasterrcnn_resnet50_fpn_v2` was used and pretrained on COCO, with a new classifier for 8 classes. The RPN generates candidate boxes while the second stage classifies each proposal and improves its box. Two changes were tested in turn: more RPN proposals (from 2000 to 3000 in training and from 1000 to 2000 during testing) and a GIoU box loss in the second stage instead of smooth-L1.
 
 #### One-stage anchor-based: RetinaNet
 
-<!-- anchor coverage analysis, tuned parameters: anchor sizes, focal gamma -->
+`retinanet_resnet50_fpn_v2` was used. It uses focal loss against the large number of background anchors. Anchor sizes were chosen from an anchor-coverage check. With anchors from **32px** only 25% of small and none of tiny objects could rach IoU >= 0.5. However, with anchors from 16px - the numbers grew to **95%** and **55%**. For this task anchor sizes were tuned from 32–512 to 16–256 px and focal loss gamma (2.0 -> 1.5).
 
 #### One-stage anchor-free: FCOS
 
-<!-- location assignment, simulation, tuned parameters: P2 level, CIoU loss -->
+In FCOS a feature-map location is positive for some box if it lies inside of it and is close to centre of the box. The box size must fit the FPN level. Simulation of this rule (with default levels of P3-P7) showed that 18.6% of tiny objects get no positive location, but an extra P2 level drops this number to 1.5%. The P2 level (off/on) and the box loss (GIoU -> CIoU) were tuned.
 
 #### Query-based: RT-DETR
 
-<!-- bipartite matching and no NMS, number of queries vs density -->
+`PekingU/rtdetr_r50vd` from Hugging Face was used. Hungarian (bipartite) matching assigns each object to one query during training, so the model learns not to produce duplicates and needs no NMS. As frames may contain up to 180 objects, 300 queries give only ~2 queries per object in the most dense frames, so 500 queries were tested.
 
 ### Pipeline
 
-<!-- part A: score threshold, NMS, flip TTA; part B: smaller anchors (B1), ensemble with RT-DETR (B2) -->
+The pipeline is based on the best required CNN, `frcnn_props_giou` and the same validation frames are used for measuring steps. 
+- **Part A:** changes only for inference. A lower threshold (0.001) with up to 500 detections per frame, the NMS threshold 0.5 / 0.6 / 0.7 and horizontal flip augmentation combined with NMS.
+- **Part B:** changes the model itself. Smaller RPN anchors (16-256px) with the same protocol. Also ensemble of Faster R-CNN and RT-DETR q500, merged with class-wise NMS.
 
 ## Results
 
