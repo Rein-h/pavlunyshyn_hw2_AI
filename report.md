@@ -7,7 +7,7 @@ date: 2026-10-12
 
 ## Introduction
 
-The core task of this homework is to develop a deep learning model capable of accurately identifying objects across the video. The objects are split into 8 different classes: person, bicycle, car, van, truck, tricycle, bus, motor. For detection 5 algorithms were chosen: One-stage Anchor-based, Two-stage Anchor-based, One-stage Anchor-free and a Query-based. Also a custom pipeline was developed, which will be explained more broadly in other section.
+The core task of this homework is to develop a deep learning model capable of accurately identifying objects across the video. The objects are split into 8 different classes: person, bicycle, car, van, truck, tricycle, bus, motor. For detection 4 algorithms were chosen: One-stage Anchor-based, Two-stage Anchor-based, One-stage Anchor-free and a Query-based. Also a custom pipeline was developed, which will be explained more broadly in other section.
 
 The models were trained mainly on a free Tesla T4 GPU in Google Colab and on NVIDIA GeForce GTX 1660 SUPER (local PC). 
 
@@ -63,31 +63,31 @@ In order to prevent this:
 
 ### Training protocol
 
-<!-- shared settings, optimisers, evaluation, noise level, deviations (T4 vs GTX 1660, RT-DETR budget and fp32) -->
+Every detector has used the same protocol: COCO-pretrained weights, the same validation and train frames, 8 epochs, an effective batch of 4 and seed 42. CNNs were trained with SGD (lr 0.005, cosine schedule, mixed precision), RT-DETR with AdamW (lr 1e-4, backbone ×0.1). Every epoch the model was evaluated on validation data and the best epoch was kept.  Changes in mAP smaller than ±0.01 are treated as noise. All CNNs were trained on a Colab T4, while RT-DETR was trained locally on a GTX 1660 SUPER in fp32 (fp16 gave NaN losses) with 90-minute budget per every run.
 
 ### Detectors
 
 #### Two-stage anchor-based: Faster R-CNN
 
-Torchvision `fasterrcnn_resnet50_fpn_v2` was used and pretrained on COCO, with a new classifier for 8 classes. The RPN generates candidate boxes while the second stage classifies each proposal and improves its box. Two changes were tested in turn: more RPN proposals (from 2000 to 3000 in training and from 1000 to 2000 during testing) and a GIoU box loss in the second stage instead of smooth-L1.
+Torchvision `fasterrcnn_resnet50_fpn_v2` was used and COCO-pretrained, with a new classifier for 8 classes. The RPN generates candidate boxes while the second stage classifies each proposal and improves its box. Two changes were tested in turn: more RPN proposals (from 2000 to 3000 in training and from 1000 to 2000 during testing) and a GIoU box loss in the second stage instead of smooth-L1.
 
 #### One-stage anchor-based: RetinaNet
 
-`retinanet_resnet50_fpn_v2` was used. It uses focal loss against the large number of background anchors. Anchor sizes were chosen from an anchor-coverage check. With anchors from **32px** only 25% of small and none of tiny objects could rach IoU >= 0.5. However, with anchors from 16px - the numbers grew to **95%** and **55%**. For this task anchor sizes were tuned from 32–512 to 16–256 px and focal loss gamma (2.0 -> 1.5).
+`retinanet_resnet50_fpn_v2` was used. It uses focal loss against the large number of background anchors. Anchor sizes were chosen from an anchor-coverage check. With anchors from **32px** only 25% of small and none of the tiny objects could reach IoU >= 0.5. However, with anchors from **16px**, the numbers grew to **95%** and **55%**. For this task anchor sizes were tuned from 32–512 to 16–256 px and focal loss gamma was changed (2.0 -> 1.5).
 
 #### One-stage anchor-free: FCOS
 
-In FCOS a feature-map location is positive for some box if it lies inside of it and is close to centre of the box. The box size must fit the FPN level. Simulation of this rule (with default levels of P3-P7) showed that 18.6% of tiny objects get no positive location, but an extra P2 level drops this number to 1.5%. The P2 level (off/on) and the box loss (GIoU -> CIoU) were tuned.
+In FCOS a feature-map location is positive for some box if it lies inside of it and is close to the centre of the box. The box size must fit the FPN level. Simulation of this rule (with default levels of P3-P7) showed that 18.6% of tiny objects get no positive location, but an extra P2 level drops this number to 1.5%. The P2 level (off/on) and the box loss (GIoU -> CIoU) were tuned.
 
 #### Query-based: RT-DETR
 
-`PekingU/rtdetr_r50vd` from Hugging Face was used. Hungarian (bipartite) matching assigns each object to one query during training, so the model learns not to produce duplicates and needs no NMS. As frames may contain up to 180 objects, 300 queries give only ~2 queries per object in the most dense frames, so 500 queries were tested.
+`PekingU/rtdetr_r50vd` from Hugging Face was used. Hungarian (bipartite) matching assigns each object to one query during training, so the model learns not to produce duplicates and needs no NMS. As frames may contain up to 180 objects, 300 queries give only ~2 queries per object in the densest frames, so 500 queries were tested.
 
 ### Pipeline
 
-The pipeline is based on the best required CNN, `frcnn_props_giou` and the same validation frames are used for measuring steps. 
-- **Part A:** changes only for inference. A lower threshold (0.001) with up to 500 detections per frame, the NMS threshold 0.5 / 0.6 / 0.7 and horizontal flip augmentation combined with NMS.
-- **Part B:** changes the model itself. Smaller RPN anchors (16-256px) with the same protocol. Also ensemble of Faster R-CNN and RT-DETR q500, merged with class-wise NMS.
+The pipeline is based on the best required CNN, `frcnn_props_giou`, and the same validation frames are used for measuring steps. 
+- **Part A:** changes only for inference. A lower score threshold (0.001) with up to 500 detections per frame (A1), the NMS threshold 0.5 / 0.6 / 0.7 (A2) and horizontal flip augmentation combined with NMS (A3).
+- **Part B:** changes the model itself. Smaller RPN anchors (16-256px) with the same protocol (B1). Also, an ensemble of Faster R-CNN (with A1) and RT-DETR q500, merged with class-wise NMS (B2).
 
 ## Results
 
@@ -122,7 +122,6 @@ The pipeline is based on the best required CNN, `frcnn_props_giou` and the same 
 ![Missed objects](images/failure_missed.png)
 
 *Figure 4. Failure case 1 — the validation frame with the most missed objects (Faster R-CNN, score ≥ 0.3). Green: correct detections, red: false positives, yellow dashed: missed objects, grey: ignored regions.*
-
 
 <!-- case 2: background false positives -->
 
