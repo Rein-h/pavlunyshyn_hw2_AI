@@ -63,7 +63,7 @@ In order to prevent this:
 
 ### Training protocol
 
-Every detector has used the same protocol: COCO-pretrained weights, the same validation and train frames, 8 epochs, an effective batch of 4 and seed 42. CNNs were trained with SGD (lr 0.005, cosine schedule, mixed precision), RT-DETR with AdamW (lr 1e-4, backbone ×0.1). Every epoch the model was evaluated on validation data and the best epoch was kept.  Changes in mAP smaller than ±0.01 are treated as noise. All CNNs were trained on a Colab T4, while RT-DETR was trained locally on a GTX 1660 SUPER in fp32 (fp16 gave NaN losses) with 90-minute budget per every run.
+Every detector have used the same protocol: COCO-pretrained weights, the same validation and train frames, 8 epochs, an effective batch of 4 and seed 42. CNNs were trained with SGD (lr 0.005, cosine schedule, mixed precision), RT-DETR with AdamW (lr 1e-4, backbone ×0.1). After every epoch the model was evaluated on validation data and the best epoch was kept. Changes in mAP smaller than ±0.01 are treated as noise. All CNNs were trained on a Colab T4, while RT-DETR was trained locally on a GTX 1660 SUPER in fp32 (fp16 gave NaN losses) with 90-minute budget per every run.
 
 ### Detectors
 
@@ -113,23 +113,23 @@ The pipeline is based on the best required CNN, `frcnn_props_giou`, and the same
 
 #### Faster R-CNN
 
-<!-- what the RPN and the second stage contribute (proposal recall), effect of more proposals and GIoU -->
+The upper bound is set by RPN: proposal recall (IoU >= 0.5) grows from 66% for the top-100 to 87% for the top-2000 proposals and from 56% to 77% for small objects. At the second stage objects are filtered and classified, dropping recall to 79% for any class and 76% for correct class. With more proposals *AP_smal* was raised from 0.105 to 0.137 at the same mAP, but the speed slowed down (13 -> 10 img/s). Adding GIoU gave the best mAP of 0.250. The peak performance was achieved by epoch 3-6 for every variant.
 
 #### Failure cases
 
-<!-- case 1: missed small and occluded objects -->
+Small and blocked off objects are the most common to be missed: recall drops from 0.90 for large to 0.52 for small and 0.13 for tiny objects; and from 0.81 that aren't obstructed to 0.22 for heavily obstructed objects.
 
 ![Missed objects](images/failure_missed.png)
 
 *Figure 4. Failure case 1 — the validation frame with the most missed objects (Faster R-CNN, score ≥ 0.3). Green: correct detections, red: false positives, yellow dashed: missed objects, grey: ignored regions.*
 
-<!-- case 2: background false positives -->
+Roofs, shadows or road parks sometimes look like objects from above, such mistakes occupy 22% of all FP predictions on background (Figure 5).
 
 ![Background false positives](images/failure_background.png)
 
 *Figure 5. Failure case 2 — the frame with the most false positives on background (same colours as in Figure 4).*
 
-<!-- case 3: confusion of similar classes, bus -->
+Similar classes are sometimes confused: `motor` and `person` (610 cases as rider and motorbike share one box), `van` and `car` (715), `bicycle` and `motor` (383). With only 53 validation instances, the `bus` has recall 0, being predicted as a `car`, `van` or `truck` (Figure 6).
 
 ![Class confusion](images/failure_class.png)
 
@@ -137,15 +137,15 @@ The pipeline is based on the best required CNN, `frcnn_props_giou`, and the same
 
 #### RetinaNet
 
-<!-- removing the proposal stage: class imbalance and focal loss, no box refinement; smaller anchors vs results; comparison with Faster R-CNN -->
+Without a proposal stage, RetinaNet scores ~100k anchors directly, almost all of them background; focal loss handles this imbalance, but there is no second box refinement, so localisation is worse (AP75 0.180 vs 0.222 for Faster R-CNN). Smaller anchors improved coverage but lowered mAP (0.193 → 0.171) and AP_large (0.355 → 0.300), because large objects lost the biggest anchors; gamma 1.5 recovered part of it (0.179). RetinaNet is ~1.8× faster than Faster R-CNN but clearly weaker (0.193 vs 0.250).
 
 #### FCOS
 
-<!-- search range, selected settings, results by object size, comparison with anchor-based models -->
+The search covered the P2 level (off/on) and the box loss (GIoU/CIoU). Both changes stayed within noise (0.190 → 0.196 → 0.194), and AP_small did not improve (0.094 → 0.089); only AP_large grew (0.344 → 0.365). The new, randomly initialised P2 layers probably needed more than 8 epochs. FCOS is on par with RetinaNet and below Faster R-CNN.
 
 #### RT-DETR
 
-<!-- convergence within the budget, comparison with the CNN, small objects and dense scenes -->
+Neither run converged: the 90-minute budget stopped them after 4–5 of 8 epochs while the loss was still falling. Even so, RT-DETR matches the best CNN (0.253 vs 0.250) and is ahead of it at every epoch (Figure 7). Without NMS it keeps neighbouring objects, so AR is higher (0.48 vs 0.40) and mAP on the densest frames is slightly better (0.356 vs 0.350); 500 queries added +0.005 mAP.
 
 ![RT-DETR vs Faster R-CNN](images/rtdetr_vs_cnn.png)
 
@@ -164,7 +164,7 @@ The pipeline is based on the best required CNN, `frcnn_props_giou`, and the same
 | B1 | smaller RPN anchors (16–256 px) | 0.227 | 0.120 | 0.343 |
 | B2 | A1 + rtdetr_q500 ensemble, NMS 0.6 | **0.266** | **0.143** | **0.497** |
 
-<!-- what helped in part A, why B1 failed, why the ensemble works -->
+A1 gave +0.006 mAP and +0.058 AR without retraining. NMS 0.6 equalled 0.5, while 0.7 added duplicates. Flip TTA did not help, because NMS keeps one of two shifted boxes instead of averaging them. B1 was worse: small objects already received proposals, while large ones lost the 512-px anchors. B2 was best (+0.010 over A1), since the CNN and the transformer make different errors.
 
 **Table 3.** Kaggle submissions (public leaderboard).
 
@@ -177,7 +177,11 @@ The pipeline is based on the best required CNN, `frcnn_props_giou`, and the same
 
 ### Unsuccessful attempts
 
-<!-- smaller anchors (RetinaNet, B1), P2 and CIoU in FCOS, flip TTA, fp16 on the local GPU, 500-detection submission -->
+- Smaller anchors in RetinaNet and Faster R-CNN (B1).
+- P2 level and CIoU loss in FCOS (no significant gain).
+- Horizontal-flip TTA.
+- fp16 training on the local GTX 16xx GPU: NaN losses in RT-DETR and mAP 0.000 for B1 (the same code reached 0.227 on a T4).
+- A submission with 500 detections per image (Kaggle internal scoring error).
 
 ## Conclusion
 
